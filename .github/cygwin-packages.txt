@@ -1,0 +1,8 @@
+cygwin64
+gcc-g++=13.4.0-1
+ccache
+python39
+python39-pip
+git
+procps
+gettext

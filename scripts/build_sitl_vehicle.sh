@@ -24,10 +24,13 @@ else
   WAF_OPTIONS=""
 fi
 
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+# ArduPilot 4.5.x waf still imports stdlib `imp` (removed in Python 3.12).
+PYTHON_BIN="${PYTHON_BIN:-python3.9}"
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
-  PYTHON_BIN=python3.12
+  PYTHON_BIN=python3
 fi
+"${PYTHON_BIN}" -c "import imp" >/dev/null
+
 
 {
   "${PYTHON_BIN}" ./waf --color yes --toolchain "${TOOLCHAIN}" --board sitl configure 2>&1

@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.discover.outputs.should_build }}
-      matrix: ${{ steps.discover.outputs.matrix }}
+      tags: ${{ steps.discover.outputs.tags }}
       missing_count: ${{ steps.discover.outputs.missing_count }}
     steps:
       - name: Checkout VGCS-SITL
@@ -47,46 +47,61 @@ jobs:
             --only-tag "${{ github.event.inputs.only_tag || '' }}"
 
   build:
-    name: Build ${{ matrix.tag }}
+    name: Build batch (Cygwin once)
     needs: discover
     if: needs.discover.outputs.should_build == 'true'
     runs-on: windows-latest
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     steps:
       - name: Checkout VGCS-SITL scripts
         uses: actions/checkout@v4
         with:
           path: vgcs-sitl
 
-      - name: Checkout ArduPilot ${{ matrix.tag }}
-        uses: actions/checkout@v4
+      - name: Restore Cygwin cache
+        id: cache-cygwin
+        uses: actions/cache@v4
         with:
-          repository: ArduPilot/ardupilot
-          ref: ${{ matrix.tag }}
-          path: ardupilot
-          submodules: recursive
-          fetch-depth: 1
+          path: |
+            C:\cygwin
+            C:\cygwin-packages
+          key: cygwin-x86_64-py39-${{ hashFiles('vgcs-sitl/.github/cygwin-packages.txt') }}
+
+      - name: Restore compiler ccache
+        uses: actions/cache@v4
+        with:
+          path: C:\ccache-sitl
+          key: ccache-sitl-${{ github.run_id }}
+          restore-keys: |
+            ccache-sitl-
 
       - name: Install Cygwin toolchain
+        if: steps.cache-cygwin.outputs.cache-hit != 'true'
         uses: cygwin/cygwin-install-action@v6
         with:
-          packages: cygwin64 gcc-g++=13.4.0-1 ccache python312 python312-pip git procps gettext
+          work-vol: "C:"
+          install-dir: "C:\\cygwin"
+          packages: cygwin64 gcc-g++=13.4.0-1 ccache python39 python39-pip git procps gettext
           add-to-path: false
 
-      - name: Prepare Python / ccache wrappers
+      - name: Verify Cygwin from cache
+        if: steps.cache-cygwin.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\cygwin\bin\bash.exe")) {
+            throw "Cygwin cache restore failed (bash.exe missing)."
+          }
+          Write-Host "Cygwin cache hit — skipping package download/install."
+
+      - name: Prepare Python 3.9 / ccache wrappers
         env:
           PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
         shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
         run: >-
           ls -la /usr/bin/python3* &&
-          /usr/bin/python3.12 -c "import sys; print(sys.version)" &&
-          ln -sf /usr/bin/python3.12 /usr/bin/python3 &&
-          ln -sf /usr/bin/pip3.12 /usr/bin/pip3 &&
+          /usr/bin/python3.9 -c "import sys, imp; print(sys.version); print('imp OK')" &&
+          ln -sf /usr/bin/python3.9 /usr/bin/python3 &&
           python3 -c "import sys; print(sys.version)" &&
           python3 -m pip install --progress-bar off empy==3.3.4 pexpect &&
           python3 -m pip install --progress-bar off dronecan --upgrade &&
@@ -98,49 +113,13 @@ jobs:
           ln -sf ccache x86_64-pc-cygwin-gcc &&
           ln -sf ccache x86_64-pc-cygwin-g++
 
-      - name: Build ${{ matrix.vehicle }} SITL (${{ matrix.version }})
-        env:
-          GITHUB_ACTIONS: "true"
-          PATH: /usr/local/bin:/usr/bin:$(cygpath ${SYSTEMROOT})/system32
-        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
-        run: >-
-          CYG_ARDU=$(cygpath -u "$GITHUB_WORKSPACE/ardupilot") &&
-          CYG_SCRIPTS=$(cygpath -u "$GITHUB_WORKSPACE/vgcs-sitl/scripts") &&
-          git config --global --add safe.directory "${CYG_ARDU}" &&
-          cd "${CYG_ARDU}" &&
-          bash "${CYG_SCRIPTS}/build_sitl_vehicle.sh"
-          "${{ matrix.waf_target }}"
-          "${{ matrix.artifact_name }}"
-          "${{ matrix.binary_name }}"
-
-      - name: Stage release files
-        shell: pwsh
-        run: |
-          $src = Join-Path $env:GITHUB_WORKSPACE "ardupilot\artifacts"
-          $dst = Join-Path $env:GITHUB_WORKSPACE "release-files"
-          New-Item -ItemType Directory -Force -Path $dst | Out-Null
-          Copy-Item -Path (Join-Path $src "*") -Destination $dst -Force
-          Get-ChildItem $dst | Format-Table Name, Length
-
-      - name: Publish GitHub Release ${{ matrix.tag }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ matrix.tag }}
-          name: ${{ matrix.tag }}
-          body: |
-            Windows (Cygwin) SITL build for ArduPilot **${{ matrix.tag }}**.
-
-            | Field | Value |
-            | --- | --- |
-            | Vehicle | ${{ matrix.vehicle }} |
-            | Version | ${{ matrix.version }} |
-            | Upstream | https://github.com/ArduPilot/ardupilot/tree/${{ matrix.tag }} |
-            | Primary binary | `${{ matrix.artifact_name }}` |
-
-            Runtime `cyg*.dll` files are included next to the binary (Mission Planner layout).
-
-            Source: ArduPilot (GPLv3). Built by [VGCS-SITL](https://github.com/${{ github.repository }}).
-          files: release-files/*
-          fail_on_unmatched_files: true
+      - name: Build and publish batch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\vgcs-sitl\scripts\run_batch.ps1" `
+            -TagsJson '${{ needs.discover.outputs.tags }}' `
+            -Workspace "$env:GITHUB_WORKSPACE" `
+            -Repo "${{ github.repository }}"

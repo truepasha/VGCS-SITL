@@ -20,6 +20,9 @@ Workflow: [`.github/workflows/sitl-cygwin.yml`](.github/workflows/sitl-cygwin.ym
 
 - **schedule** every 6 hours — builds up to **2** missing tags (oldest first)
 - **workflow_dispatch** — optional `only_tag` (e.g. `Plane-4.5.7`) and `max_builds`
+- **one Windows job per run** installs Cygwin once, then builds the whole batch
+- **Cygwin + ccache** restored via `actions/cache` when possible
+- **Python 3.9** on Cygwin (waf for 4.5.x needs stdlib `imp`; not available on 3.12)
 
 Discover logic: [`scripts/discover_missing_tags.py`](scripts/discover_missing_tags.py)  
 Build script: [`scripts/build_sitl_vehicle.sh`](scripts/build_sitl_vehicle.sh) (based on ArduPilot `Tools/scripts/cygwin_build.sh`)

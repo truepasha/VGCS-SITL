@@ -197,8 +197,8 @@ def main() -> int:
         ]
 
     batch = missing[: max(0, args.max_builds)]
-    matrix = {"include": batch}
     should_build = "true" if batch else "false"
+    tags_json = json.dumps(batch, separators=(",", ":"))
 
     print(f"Upstream matching tags: {len(candidate_tags(upstream))}")
     print(f"Already released here: {len(existing)}")
@@ -209,14 +209,10 @@ def main() -> int:
 
     if args.github_output:
         write_github_output(args.github_output, "should_build", should_build)
-        write_github_output(
-            args.github_output,
-            "matrix",
-            json.dumps(matrix, separators=(",", ":")),
-        )
+        write_github_output(args.github_output, "tags", tags_json)
         write_github_output(args.github_output, "missing_count", str(len(missing)))
 
-    print(json.dumps(matrix, indent=2))
+    print(json.dumps(batch, indent=2))
     return 0
 
 
