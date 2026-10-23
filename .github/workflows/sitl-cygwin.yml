@@ -103,7 +103,8 @@ jobs:
           /usr/bin/python3.9 -c "import sys, imp; print(sys.version); print('imp OK')" &&
           ln -sf /usr/bin/python3.9 /usr/bin/python3 &&
           python3 -c "import sys; print(sys.version)" &&
-          python3 -m pip install --progress-bar off empy==3.3.4 pexpect &&
+          python3 -m pip install --progress-bar off
+          'empy==3.3.4' pexpect future lxml pyserial &&
           python3 -m pip install --progress-bar off dronecan --upgrade &&
           mkdir -p /usr/local/bin &&
           cp /usr/bin/ccache /usr/local/bin/ &&
