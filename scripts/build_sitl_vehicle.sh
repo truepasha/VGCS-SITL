@@ -46,19 +46,35 @@ if [[ ! -f "${BIN_PATH}" ]]; then
 fi
 
 cp -v "${BIN_PATH}" "artifacts/${ARTIFACT_NAME}"
-# cygcheck resolves DLL deps more reliably with an .exe suffix
-cp -v "${BIN_PATH}" "artifacts/${ARTIFACT_NAME}.exe"
+
+# Cygwin treats "name" and "name.exe" as the same path. Never use
+# "${ARTIFACT_NAME}.exe" (e.g. ArduPlane.elf.exe) — `rm` would delete ArduPlane.elf too.
+PROBE_EXE="artifacts/_vgcs_cygcheck_probe.exe"
+cp -v "${BIN_PATH}" "${PROBE_EXE}"
 
 while read -r line; do
   cp -v "/usr/bin/${line}" artifacts/
-done < <(cygcheck "artifacts/${ARTIFACT_NAME}.exe" | grep -oP 'cyg[^\s\\/]+\.dll' | sort -u)
+done < <(cygcheck "${PROBE_EXE}" | grep -oP 'cyg[^\s\\/]+\.dll' | sort -u)
 
-rm -f "artifacts/${ARTIFACT_NAME}.exe"
+rm -f "${PROBE_EXE}"
+
+# Windows-friendly sibling (safe: ArduPlane.exe ≠ ArduPlane.elf under Cygwin rules)
+EXE_NAME="${ARTIFACT_NAME%.elf}.exe"
+if [[ "${EXE_NAME}" != "${ARTIFACT_NAME}" ]]; then
+  cp -v "${BIN_PATH}" "artifacts/${EXE_NAME}"
+fi
+
+if [[ ! -f "artifacts/${ARTIFACT_NAME}" ]]; then
+  echo "Primary artifact vanished after cygcheck staging: artifacts/${ARTIFACT_NAME}" >&2
+  ls -la artifacts/ || true
+  exit 1
+fi
 
 git log -1 > artifacts/git.txt
 printf '%s\n' \
   "vehicle_waf=${WAF_TARGET}" \
   "artifact=${ARTIFACT_NAME}" \
+  "exe=${EXE_NAME:-}" \
   "binary=${BINARY_NAME}" \
   "toolchain=${TOOLCHAIN}" \
   > artifacts/vgcs-sitl.txt
