@@ -1,0 +1,141 @@
+name: SITL Cygwin builds
+
+on:
+  schedule:
+    # Catch up gradually; each Windows SITL build is expensive.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      max_builds:
+        description: "Max missing tags to build in this run"
+        required: false
+        default: "2"
+        type: string
+      only_tag:
+        description: "Optional single upstream tag (e.g. Plane-4.5.7)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: sitl-cygwin
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    name: Discover missing tags
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.discover.outputs.should_build }}
+      matrix: ${{ steps.discover.outputs.matrix }}
+      missing_count: ${{ steps.discover.outputs.missing_count }}
+    steps:
+      - name: Checkout VGCS-SITL
+        uses: actions/checkout@v4
+
+      - name: Discover tags ≥ 4.5.0 not yet released here
+        id: discover
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/discover_missing_tags.py \
+            --repo "${{ github.repository }}" \
+            --max-builds "${{ github.event.inputs.max_builds || '2' }}" \
+            --only-tag "${{ github.event.inputs.only_tag || '' }}"
+
+  build:
+    name: Build ${{ matrix.tag }}
+    needs: discover
+    if: needs.discover.outputs.should_build == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout VGCS-SITL scripts
+        uses: actions/checkout@v4
+        with:
+          path: vgcs-sitl
+
+      - name: Checkout ArduPilot ${{ matrix.tag }}
+        uses: actions/checkout@v4
+        with:
+          repository: ArduPilot/ardupilot
+          ref: ${{ matrix.tag }}
+          path: ardupilot
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install Cygwin toolchain
+        uses: cygwin/cygwin-install-action@v6
+        with:
+          packages: cygwin64 gcc-g++=13.4.0-1 ccache python312 python312-pip git procps gettext
+          add-to-path: false
+
+      - name: Prepare Python / ccache wrappers
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: |
+          export PATH="/usr/bin:$(cygpath "${SYSTEMROOT}")/system32"
+          python3 --version
+          python3 -m pip install --progress-bar off 'empy==3.3.4' pexpect
+          python3 -m pip install --progress-bar off dronecan --upgrade
+          mkdir -p /usr/local/bin
+          cp /usr/bin/ccache /usr/local/bin/
+          cd /usr/local/bin
+          ln -sf ccache gcc
+          ln -sf ccache g++
+          ln -sf ccache x86_64-pc-cygwin-gcc
+          ln -sf ccache x86_64-pc-cygwin-g++
+
+      - name: Build ${{ matrix.vehicle }} SITL (${{ matrix.version }})
+        env:
+          GITHUB_ACTIONS: "true"
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: |
+          export PATH="/usr/local/bin:/usr/bin:$(cygpath "${SYSTEMROOT}")/system32"
+          CYG_ARDU=$(cygpath -u "$GITHUB_WORKSPACE/ardupilot")
+          CYG_SCRIPTS=$(cygpath -u "$GITHUB_WORKSPACE/vgcs-sitl/scripts")
+          git config --global --add safe.directory "${CYG_ARDU}"
+          cd "${CYG_ARDU}"
+          bash "${CYG_SCRIPTS}/build_sitl_vehicle.sh" \
+            "${{ matrix.waf_target }}" \
+            "${{ matrix.artifact_name }}" \
+            "${{ matrix.binary_name }}"
+
+      - name: Stage release files
+        shell: pwsh
+        run: |
+          $src = Join-Path $env:GITHUB_WORKSPACE "ardupilot\artifacts"
+          $dst = Join-Path $env:GITHUB_WORKSPACE "release-files"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Copy-Item -Path (Join-Path $src "*") -Destination $dst -Force
+          Get-ChildItem $dst | Format-Table Name, Length
+
+      - name: Publish GitHub Release ${{ matrix.tag }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ matrix.tag }}
+          name: ${{ matrix.tag }}
+          body: |
+            Windows (Cygwin) SITL build for ArduPilot **${{ matrix.tag }}**.
+
+            | Field | Value |
+            | --- | --- |
+            | Vehicle | ${{ matrix.vehicle }} |
+            | Version | ${{ matrix.version }} |
+            | Upstream | https://github.com/ArduPilot/ardupilot/tree/${{ matrix.tag }} |
+            | Primary binary | `${{ matrix.artifact_name }}` |
+
+            Runtime `cyg*.dll` files are included next to the binary (Mission Planner layout).
+
+            Source: ArduPilot (GPLv3). Built by [VGCS-SITL](https://github.com/${{ github.repository }}).
+          files: release-files/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
