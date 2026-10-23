@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Build one ArduPilot SITL vehicle with the Cygwin toolchain (Mission Planner style).
 # Expects to run inside a Cygwin bash with the ardupilot tree as CWD.
+#
+# IMPORTANT: Never use Cygwin `cp` to create names like ArduPlane.elf — Cygwin
+# auto-appends .exe to PE binaries (result: ArduPlane.elf.exe). Final .elf/.exe
+# naming is done in run_batch.ps1 via System.IO.File.Copy.
 set -euo pipefail
 set -x
 
@@ -31,52 +35,45 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
 fi
 "${PYTHON_BIN}" -c "import imp" >/dev/null
 
-
 {
   "${PYTHON_BIN}" ./waf --color yes --toolchain "${TOOLCHAIN}" --board sitl configure 2>&1
   # shellcheck disable=SC2086
   "${PYTHON_BIN}" ./waf "${WAF_TARGET}" ${WAF_OPTIONS} 2>&1
 } | tee artifacts/build.txt
 
-BIN_PATH="build/sitl/bin/${BINARY_NAME}"
-if [[ ! -f "${BIN_PATH}" ]]; then
-  echo "Missing build output: ${BIN_PATH}" >&2
+BIN_PATH=""
+if [[ -f "build/sitl/bin/${BINARY_NAME}.exe" ]]; then
+  BIN_PATH="build/sitl/bin/${BINARY_NAME}.exe"
+elif [[ -f "build/sitl/bin/${BINARY_NAME}" ]]; then
+  BIN_PATH="build/sitl/bin/${BINARY_NAME}"
+else
+  echo "Missing build output for ${BINARY_NAME}" >&2
   ls -la build/sitl/bin/ || true
   exit 1
 fi
 
-cp -v "${BIN_PATH}" "artifacts/${ARTIFACT_NAME}"
+echo "BIN_PATH=${BIN_PATH}"
+# Record source path for PowerShell staging (relative to ardupilot tree).
+printf '%s\n' "${BIN_PATH}" > artifacts/binary-source.txt
+printf '%s\n' "${ARTIFACT_NAME}" > artifacts/artifact-name.txt
 
-# Cygwin treats "name" and "name.exe" as the same path. Never use
-# "${ARTIFACT_NAME}.exe" (e.g. ArduPlane.elf.exe) — `rm` would delete ArduPlane.elf too.
+# Collect Cygwin DLL deps. Probe MUST end with .exe (PE); use a name that is
+# not a prefix of the final artifact (avoid Cygwin name/name.exe aliasing).
 PROBE_EXE="artifacts/_vgcs_cygcheck_probe.exe"
 cp -v "${BIN_PATH}" "${PROBE_EXE}"
-
 while read -r line; do
   cp -v "/usr/bin/${line}" artifacts/
 done < <(cygcheck "${PROBE_EXE}" | grep -oP 'cyg[^\s\\/]+\.dll' | sort -u)
-
 rm -f "${PROBE_EXE}"
-
-# Windows-friendly sibling (safe: ArduPlane.exe ≠ ArduPlane.elf under Cygwin rules)
-EXE_NAME="${ARTIFACT_NAME%.elf}.exe"
-if [[ "${EXE_NAME}" != "${ARTIFACT_NAME}" ]]; then
-  cp -v "${BIN_PATH}" "artifacts/${EXE_NAME}"
-fi
-
-if [[ ! -f "artifacts/${ARTIFACT_NAME}" ]]; then
-  echo "Primary artifact vanished after cygcheck staging: artifacts/${ARTIFACT_NAME}" >&2
-  ls -la artifacts/ || true
-  exit 1
-fi
 
 git log -1 > artifacts/git.txt
 printf '%s\n' \
   "vehicle_waf=${WAF_TARGET}" \
   "artifact=${ARTIFACT_NAME}" \
-  "exe=${EXE_NAME:-}" \
   "binary=${BINARY_NAME}" \
+  "bin_path=${BIN_PATH}" \
   "toolchain=${TOOLCHAIN}" \
   > artifacts/vgcs-sitl.txt
 
 ls -l artifacts/
+ls -l build/sitl/bin/ | head -n 50

@@ -30,6 +30,83 @@ $wsUnix = ($Workspace -replace "\\", "/")
 $scriptsUnix = (& $bash -lc "cygpath -u '$wsUnix/vgcs-sitl/scripts'").Trim()
 $ccacheUnix = (& $bash -lc "cygpath -u 'C:/ccache-sitl'").Trim()
 
+function Find-SitlBuildBinary {
+    param(
+        [string] $SrcRoot,
+        [string] $BinaryName
+    )
+
+    $candidates = @(
+        (Join-Path $SrcRoot "build\sitl\bin\$BinaryName.exe"),
+        (Join-Path $SrcRoot "build\sitl\bin\$BinaryName"),
+        (Join-Path $SrcRoot "artifacts\sitl_payload.bin"),
+        (Join-Path $SrcRoot "artifacts\$BinaryName.exe"),
+        (Join-Path $SrcRoot "artifacts\$BinaryName")
+    )
+
+    # Cygwin may have written ArduPlane.elf as ArduPlane.elf.exe
+    $artifactsDir = Join-Path $SrcRoot "artifacts"
+    if (Test-Path -LiteralPath $artifactsDir) {
+        $candidates += @(Get-ChildItem -LiteralPath $artifactsDir -File -Filter "*.elf.exe" |
+            ForEach-Object { $_.FullName })
+        $candidates += @(Get-ChildItem -LiteralPath $artifactsDir -File -Filter "*.exe" |
+            Where-Object { $_.Name -like "Ardu*" } |
+            ForEach-Object { $_.FullName })
+    }
+
+    foreach ($path in $candidates) {
+        if ($path -and (Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Length -gt 0)) {
+            return (Resolve-Path -LiteralPath $path).Path
+        }
+    }
+
+    return $null
+}
+
+function Stage-ReleaseBinaries {
+    param(
+        [string] $ArtifactsDir,
+        [string] $SourceBinary,
+        [string] $ElfName
+    )
+
+    $exeName = [IO.Path]::ChangeExtension($ElfName, ".exe")
+    if ([string]::IsNullOrWhiteSpace($exeName) -or $exeName -eq $ElfName) {
+        $exeName = "$ElfName.exe"
+    }
+
+    $elfPath = Join-Path $ArtifactsDir $ElfName
+    $exePath = Join-Path $ArtifactsDir $exeName
+    $mangledElfExe = Join-Path $ArtifactsDir ($ElfName + ".exe") # ArduPlane.elf.exe
+
+    # System.IO.File.Copy does not apply Cygwin PE→.exe renaming.
+    [IO.File]::Copy($SourceBinary, $elfPath, $true)
+    [IO.File]::Copy($SourceBinary, $exePath, $true)
+
+    if ((Test-Path -LiteralPath $mangledElfExe) -and
+        ($mangledElfExe -ne $exePath) -and
+        ($mangledElfExe -ne $elfPath)) {
+        Remove-Item -LiteralPath $mangledElfExe -Force
+    }
+
+    # Drop helper markers from the release upload set.
+    foreach ($helper in @("binary-source.txt", "artifact-name.txt", "sitl_payload.bin", "_vgcs_cygcheck_probe.exe")) {
+        $helperPath = Join-Path $ArtifactsDir $helper
+        if (Test-Path -LiteralPath $helperPath) {
+            Remove-Item -LiteralPath $helperPath -Force
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $elfPath) -or (Get-Item -LiteralPath $elfPath).Length -le 0) {
+        throw "Failed to stage ELF via File.Copy: $elfPath"
+    }
+    if (-not (Test-Path -LiteralPath $exePath) -or (Get-Item -LiteralPath $exePath).Length -le 0) {
+        throw "Failed to stage EXE via File.Copy: $exePath"
+    }
+
+    return @{ Elf = $elfPath; Exe = $exePath; ElfName = $ElfName; ExeName = $exeName }
+}
+
 foreach ($item in $tags) {
     $tag = [string]$item.tag
     $waf = [string]$item.waf_target
@@ -53,7 +130,6 @@ foreach ($item in $tags) {
 
     $srcUnix = (& $bash -lc "cygpath -u '$($src -replace '\\','/')'").Trim()
 
-    # Literal bash script (avoid PowerShell expanding $(...) / ${...}).
     $runnerBody = @'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -92,20 +168,31 @@ bash "__SCRIPTS_DIR__/build_sitl_vehicle.sh" "__WAF__" "__ARTIFACT__" "__BINARY_
         throw "No artifacts directory for $tag"
     }
 
-    $primary = Join-Path $artifacts $artifact
-    if (-not (Test-Path -LiteralPath $primary)) {
-        Write-Host "Artifacts present:"
+    $sourceBinary = $null
+    $binarySourceFile = Join-Path $artifacts "binary-source.txt"
+    if (Test-Path -LiteralPath $binarySourceFile) {
+        $rel = (Get-Content -LiteralPath $binarySourceFile -Raw).Trim()
+        if ($rel) {
+            $candidate = Join-Path $src ($rel -replace "/", "\")
+            if (Test-Path -LiteralPath $candidate) {
+                $sourceBinary = (Resolve-Path -LiteralPath $candidate).Path
+            }
+        }
+    }
+    if (-not $sourceBinary) {
+        $sourceBinary = Find-SitlBuildBinary -SrcRoot $src -BinaryName $binary
+    }
+    if (-not $sourceBinary) {
+        Write-Host "build/sitl/bin:"
+        $binDir = Join-Path $src "build\sitl\bin"
+        if (Test-Path $binDir) { Get-ChildItem $binDir | Format-Table Name, Length }
+        Write-Host "artifacts:"
         Get-ChildItem -LiteralPath $artifacts | Format-Table Name, Length
-        throw "Primary SITL binary missing after build: $primary"
+        throw "Could not locate compiled SITL binary for $tag ($binary)"
     }
 
-    # Windows Process.Start is happier with .exe; keep .elf for MP-compatible layout.
-    $exeName = [IO.Path]::ChangeExtension($artifact, ".exe")
-    if ([string]::IsNullOrWhiteSpace($exeName) -or $exeName -eq $artifact) {
-        $exeName = "$artifact.exe"
-    }
-    $exePath = Join-Path $artifacts $exeName
-    Copy-Item -LiteralPath $primary -Destination $exePath -Force
+    Write-Host "Using build binary: $sourceBinary ($((Get-Item -LiteralPath $sourceBinary).Length) bytes)"
+    $staged = Stage-ReleaseBinaries -ArtifactsDir $artifacts -SourceBinary $sourceBinary -ElfName $artifact
 
     Write-Host "Staging release files:"
     Get-ChildItem -LiteralPath $artifacts -File | Format-Table Name, Length
@@ -118,20 +205,22 @@ Windows (Cygwin) SITL build for ArduPilot **$tag**.
 | Vehicle | $vehicle |
 | Version | $version |
 | Upstream | https://github.com/ArduPilot/ardupilot/tree/$tag |
-| Primary binary | ``$artifact`` (also ``$exeName``) |
+| Primary binary | ``$($staged.ElfName)`` (also ``$($staged.ExeName)``) |
 
 Runtime ``cyg*.dll`` files are included next to the binary (Mission Planner layout).
 
 Source: ArduPilot (GPLv3). Built by [$Repo](https://github.com/$Repo).
 "@
 
+    $uploadNames = @(Get-ChildItem -LiteralPath $artifacts -File | ForEach-Object { $_.Name })
+    if ($uploadNames -notcontains $staged.ElfName) {
+        throw "Staged ELF missing from artifacts listing: $($staged.ElfName). Have: $($uploadNames -join ', ')"
+    }
+    if ($uploadNames -notcontains $staged.ExeName) {
+        throw "Staged EXE missing from artifacts listing: $($staged.ExeName). Have: $($uploadNames -join ', ')"
+    }
+
     $files = @(Get-ChildItem -LiteralPath $artifacts -File | ForEach-Object { $_.FullName })
-    if ($files.Count -eq 0) {
-        throw "Artifacts folder empty for $tag"
-    }
-    if (-not ($files | Where-Object { $_.EndsWith($artifact, [StringComparison]::OrdinalIgnoreCase) })) {
-        throw "Primary artifact not in upload list: $artifact"
-    }
 
     gh release view $tag --repo $Repo 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
@@ -139,7 +228,6 @@ Source: ArduPilot (GPLv3). Built by [$Repo](https://github.com/$Repo).
         git push "https://x-access-token:$($env:GITHUB_TOKEN)@github.com/$Repo.git" ":refs/tags/$tag" 2>$null
     }
 
-    # Create release first, then upload assets one-by-one so a missing .elf fails the job.
     gh release create $tag `
         --repo $Repo `
         --title $tag `
@@ -157,8 +245,11 @@ Source: ArduPilot (GPLv3). Built by [$Repo](https://github.com/$Repo).
     }
 
     $uploaded = gh api "repos/$Repo/releases/tags/$tag" --jq "[.assets[].name] | join(\", \")"
-    if ($uploaded -notmatch [regex]::Escape($artifact)) {
-        throw "Release $tag is missing primary asset $artifact. Uploaded: $uploaded"
+    if ($uploaded -notmatch [regex]::Escape($staged.ElfName)) {
+        throw "Release $tag is missing $($staged.ElfName). Uploaded: $uploaded"
+    }
+    if ($uploaded -notmatch [regex]::Escape($staged.ExeName)) {
+        throw "Release $tag is missing $($staged.ExeName). Uploaded: $uploaded"
     }
 
     Write-Host "Published release $tag ($uploaded)"
