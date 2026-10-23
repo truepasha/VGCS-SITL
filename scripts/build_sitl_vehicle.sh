@@ -24,10 +24,15 @@ else
   WAF_OPTIONS=""
 fi
 
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+  PYTHON_BIN=python3.12
+fi
+
 {
-  python3 ./waf --color yes --toolchain "${TOOLCHAIN}" --board sitl configure 2>&1
+  "${PYTHON_BIN}" ./waf --color yes --toolchain "${TOOLCHAIN}" --board sitl configure 2>&1
   # shellcheck disable=SC2086
-  python3 ./waf "${WAF_TARGET}" ${WAF_OPTIONS} 2>&1
+  "${PYTHON_BIN}" ./waf "${WAF_TARGET}" ${WAF_OPTIONS} 2>&1
 } | tee artifacts/build.txt
 
 BIN_PATH="build/sitl/bin/${BINARY_NAME}"
