@@ -27,14 +27,14 @@ permissions:
 jobs:
   discover:
     name: Discover missing tags
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       should_build: ${{ steps.discover.outputs.should_build }}
       tags: ${{ steps.discover.outputs.tags }}
       missing_count: ${{ steps.discover.outputs.missing_count }}
     steps:
       - name: Checkout VGCS-SITL
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Discover tags ≥ 4.5.0 not yet released here
         id: discover
@@ -55,13 +55,13 @@ jobs:
       contents: write
     steps:
       - name: Checkout VGCS-SITL scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: vgcs-sitl
 
       - name: Restore Cygwin cache
         id: cache-cygwin
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             C:\cygwin
@@ -69,7 +69,7 @@ jobs:
           key: cygwin-x86_64-py39-${{ hashFiles('vgcs-sitl/.github/cygwin-packages.txt') }}
 
       - name: Restore compiler ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: C:\ccache-sitl
           key: ccache-sitl-${{ github.run_id }}
