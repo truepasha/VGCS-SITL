@@ -1,4 +1,4 @@
-# Ensure VGCS-SITL release notes contain: ArduPilot-Release-Date: yyyy-MM-dd
+﻿# Ensure VGCS-SITL release notes contain: ArduPilot-Release-Date: yyyy-MM-dd
 # Does not upload ardupilot-release.json. Requires: gh auth with repo scope.
 param(
     [Parameter(Mandatory = $false)]
@@ -23,25 +23,45 @@ function Format-UtcDateOnly {
 function Resolve-ArduPilotReleaseDate {
     param([string] $Tag)
 
-    $apiJson = gh api "repos/ArduPilot/ardupilot/releases/tags/$Tag" 2>$null
-    if ($LASTEXITCODE -eq 0 -and $apiJson) {
-        $published = ($apiJson | ConvertFrom-Json).published_at
-        if (-not [string]::IsNullOrWhiteSpace($published)) {
-            return @{
-                Date   = (Format-UtcDateOnly ([datetimeoffset]::Parse($published)))
-                Source = "github-release"
+    # Some ArduPilot tags are not GitHub "Releases" (404) — fall through to commit date.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $apiJson = gh api "repos/ArduPilot/ardupilot/releases/tags/$Tag" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $apiJson) {
+            $published = ($apiJson | ConvertFrom-Json).published_at
+            if (-not [string]::IsNullOrWhiteSpace($published)) {
+                return @{
+                    Date   = (Format-UtcDateOnly ([datetimeoffset]::Parse($published)))
+                    Source = "github-release"
+                }
             }
         }
     }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
 
-    $ls = git ls-remote --tags --refs https://github.com/ArduPilot/ardupilot.git $Tag 2>$null
+    $ErrorActionPreference = "Continue"
+    try {
+        $ls = git ls-remote --tags --refs https://github.com/ArduPilot/ardupilot.git $Tag 2>$null
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($ls)) {
         throw "Tag not found on ArduPilot/ardupilot: $Tag"
     }
 
     $sha = ($ls -split "\s+")[0]
-    $commitJson = gh api "repos/ArduPilot/ardupilot/git/commits/$sha"
-    if ($LASTEXITCODE -ne 0) {
+    $ErrorActionPreference = "Continue"
+    try {
+        $commitJson = gh api "repos/ArduPilot/ardupilot/git/commits/$sha" 2>$null
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commitJson)) {
         throw "Failed to read commit $sha for $Tag"
     }
     $commitDate = ($commitJson | ConvertFrom-Json).committer.date
