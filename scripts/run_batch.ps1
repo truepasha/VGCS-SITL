@@ -352,11 +352,16 @@ Source: ArduPilot (GPLv3). Built by [$Repo](https://github.com/$Repo).
         }
     }
 
-    $uploaded = gh api "repos/$Repo/releases/tags/$tag" --jq "[.assets[].name] | join(\", \")"
-    if ($uploaded -notmatch [regex]::Escape($staged.ElfName)) {
+    # No double quotes inside --jq: Windows PowerShell splits them into extra argv tokens.
+    $assetNames = @(gh api "repos/$Repo/releases/tags/$tag" --jq ".assets[].name")
+    if ($LASTEXITCODE -ne 0) {
+        throw "gh api failed to list release assets for $tag"
+    }
+    $uploaded = $assetNames -join ", "
+    if ($assetNames -notcontains $staged.ElfName) {
         throw "Release $tag is missing $($staged.ElfName). Uploaded: $uploaded"
     }
-    if ($uploaded -notmatch [regex]::Escape($staged.ExeName)) {
+    if ($assetNames -notcontains $staged.ExeName) {
         throw "Release $tag is missing $($staged.ExeName). Uploaded: $uploaded"
     }
     if ($uploaded -notmatch [regex]::Escape("ardupilot-release.json")) {
@@ -367,3 +372,4 @@ Source: ArduPilot (GPLv3). Built by [$Repo](https://github.com/$Repo).
 }
 
 Write-Host "Batch complete ($($tags.Count) tag(s))."
+exit 0
