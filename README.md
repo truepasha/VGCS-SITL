@@ -11,8 +11,32 @@ Tracks official [ArduPilot](https://github.com/ArduPilot/ardupilot) vehicle rele
 Each GitHub Release is named like the upstream tag (`Plane-4.5.7`) and contains:
 
 - `ArduPlane.elf` / `ArduCopter.elf` / `ArduRover.elf` / `ArduSub.elf` (vehicle for that tag)
+- matching `.exe` copy of the primary binary
 - required `cyg*.dll` runtime files
 - `git.txt`, `build.txt`, `vgcs-sitl.txt`
+- **`ardupilot-release.json`** — slim manifest with the **official ArduPilot release timestamp**
+  (`ardupilotReleaseUtc`, ISO-8601 UTC). Prefer `published_at` from the matching
+  [ArduPilot/ardupilot](https://github.com/ArduPilot/ardupilot) GitHub Release; otherwise the
+  git commit time of that tag. VectorGCS reads this asset for the Version combo date.
+
+Example `ardupilot-release.json`:
+
+```json
+{
+  "upstreamTag": "Plane-4.5.7",
+  "vehicle": "Plane",
+  "version": "4.5.7",
+  "ardupilotReleaseUtc": "2024-05-28T02:15:33Z",
+  "ardupilotReleaseSource": "github-release"
+}
+```
+
+Backfill older releases (missing the manifest):
+
+```powershell
+pwsh -File scripts/backfill_ardupilot_release_manifest.ps1
+# optional: -OnlyTag Plane-4.5.7 -WhatIf
+```
 
 ## Automation
 

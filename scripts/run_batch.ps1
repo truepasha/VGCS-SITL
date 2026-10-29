@@ -107,6 +107,97 @@ function Stage-ReleaseBinaries {
     return @{ Elf = $elfPath; Exe = $exePath; ElfName = $ElfName; ExeName = $exeName }
 }
 
+function Format-UtcIsoZ {
+    param([datetimeoffset] $Value)
+    return $Value.ToUniversalTime().UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+}
+
+<#
+.SYNOPSIS
+  Official ArduPilot release time for a vehicle tag (Plane-4.5.7, …).
+  Prefer GitHub Release published_at; fall back to the cloned commit timestamp.
+#>
+function Resolve-ArduPilotReleaseUtc {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Tag,
+
+        [Parameter(Mandatory = $true)]
+        [string] $SrcDir
+    )
+
+    $apiJson = gh api "repos/ArduPilot/ardupilot/releases/tags/$Tag" 2>$null
+    if ($LASTEXITCODE -eq 0 -and $apiJson) {
+        $published = ($apiJson | ConvertFrom-Json).published_at
+        if (-not [string]::IsNullOrWhiteSpace($published)) {
+            return @{
+                Utc    = (Format-UtcIsoZ ([datetimeoffset]::Parse($published)))
+                Source = "github-release"
+            }
+        }
+    }
+
+    $gitDate = (git -C $SrcDir log -1 --format=%cI 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($gitDate)) {
+        return @{
+            Utc    = (Format-UtcIsoZ ([datetimeoffset]::Parse($gitDate.Trim())))
+            Source = "git-commit"
+        }
+    }
+
+    throw "Could not resolve ArduPilot release date for $Tag"
+}
+
+function Write-ArduPilotReleaseManifest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $ArtifactsDir,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Tag,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Vehicle,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Version,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ArduPilotReleaseUtc,
+
+        [Parameter(Mandatory = $true)]
+        [string] $ArduPilotReleaseSource
+    )
+
+    $manifest = [ordered]@{
+        upstreamTag             = $Tag
+        vehicle                 = $Vehicle
+        version                 = $Version
+        ardupilotReleaseUtc     = $ArduPilotReleaseUtc
+        ardupilotReleaseSource  = $ArduPilotReleaseSource
+    }
+    $path = Join-Path $ArtifactsDir "ardupilot-release.json"
+    $json = ($manifest | ConvertTo-Json -Depth 5) + "`n"
+    [IO.File]::WriteAllText($path, $json, (New-Object System.Text.UTF8Encoding $false))
+
+    $vgcsMeta = Join-Path $ArtifactsDir "vgcs-sitl.txt"
+    $extra = @(
+        "ardupilot_release_utc=$ArduPilotReleaseUtc"
+        "ardupilot_release_source=$ArduPilotReleaseSource"
+    )
+    if (Test-Path -LiteralPath $vgcsMeta) {
+        Add-Content -LiteralPath $vgcsMeta -Value ($extra -join "`n") -Encoding utf8
+    }
+    else {
+        [IO.File]::WriteAllText(
+            $vgcsMeta,
+            (($extra -join "`n") + "`n"),
+            (New-Object System.Text.UTF8Encoding $false))
+    }
+
+    return $path
+}
+
 foreach ($item in $tags) {
     $tag = [string]$item.tag
     $waf = [string]$item.waf_target
@@ -194,6 +285,17 @@ bash "__SCRIPTS_DIR__/build_sitl_vehicle.sh" "__WAF__" "__ARTIFACT__" "__BINARY_
     Write-Host "Using build binary: $sourceBinary ($((Get-Item -LiteralPath $sourceBinary).Length) bytes)"
     $staged = Stage-ReleaseBinaries -ArtifactsDir $artifacts -SourceBinary $sourceBinary -ElfName $artifact
 
+    $releaseInfo = Resolve-ArduPilotReleaseUtc -Tag $tag -SrcDir $src
+    $manifestPath = Write-ArduPilotReleaseManifest `
+        -ArtifactsDir $artifacts `
+        -Tag $tag `
+        -Vehicle $vehicle `
+        -Version $version `
+        -ArduPilotReleaseUtc $releaseInfo.Utc `
+        -ArduPilotReleaseSource $releaseInfo.Source
+    Write-Host "ArduPilot official release UTC: $($releaseInfo.Utc) (source=$($releaseInfo.Source))"
+    Write-Host "Wrote manifest: $manifestPath"
+
     Write-Host "Staging release files:"
     Get-ChildItem -LiteralPath $artifacts -File | Format-Table Name, Length
 
@@ -204,10 +306,13 @@ Windows (Cygwin) SITL build for ArduPilot **$tag**.
 | --- | --- |
 | Vehicle | $vehicle |
 | Version | $version |
+| ArduPilot release (UTC) | $($releaseInfo.Utc) |
+| ArduPilot release source | $($releaseInfo.Source) |
 | Upstream | https://github.com/ArduPilot/ardupilot/tree/$tag |
 | Primary binary | ``$($staged.ElfName)`` (also ``$($staged.ExeName)``) |
 
 Runtime ``cyg*.dll`` files are included next to the binary (Mission Planner layout).
+Manifest: ``ardupilot-release.json`` (official ArduPilot release timestamp for VectorGCS).
 
 Source: ArduPilot (GPLv3). Built by [$Repo](https://github.com/$Repo).
 "@
@@ -218,6 +323,9 @@ Source: ArduPilot (GPLv3). Built by [$Repo](https://github.com/$Repo).
     }
     if ($uploadNames -notcontains $staged.ExeName) {
         throw "Staged EXE missing from artifacts listing: $($staged.ExeName). Have: $($uploadNames -join ', ')"
+    }
+    if ($uploadNames -notcontains "ardupilot-release.json") {
+        throw "Manifest ardupilot-release.json missing from artifacts. Have: $($uploadNames -join ', ')"
     }
 
     $files = @(Get-ChildItem -LiteralPath $artifacts -File | ForEach-Object { $_.FullName })
@@ -250,6 +358,9 @@ Source: ArduPilot (GPLv3). Built by [$Repo](https://github.com/$Repo).
     }
     if ($uploaded -notmatch [regex]::Escape($staged.ExeName)) {
         throw "Release $tag is missing $($staged.ExeName). Uploaded: $uploaded"
+    }
+    if ($uploaded -notmatch [regex]::Escape("ardupilot-release.json")) {
+        throw "Release $tag is missing ardupilot-release.json. Uploaded: $uploaded"
     }
 
     Write-Host "Published release $tag ($uploaded)"
