@@ -14,27 +14,19 @@ Each GitHub Release is named like the upstream tag (`Plane-4.5.7`) and contains:
 - matching `.exe` copy of the primary binary
 - required `cyg*.dll` runtime files
 - `git.txt`, `build.txt`, `vgcs-sitl.txt`
-- **`ardupilot-release.json`** — slim manifest with the **official ArduPilot release timestamp**
-  (`ardupilotReleaseUtc`, ISO-8601 UTC). Prefer `published_at` from the matching
-  [ArduPilot/ardupilot](https://github.com/ArduPilot/ardupilot) GitHub Release; otherwise the
-  git commit time of that tag. VectorGCS reads this asset for the Version combo date.
 
-Example `ardupilot-release.json`:
+**Official ArduPilot release day** (UTC, no time) is written in the release notes as a machine-readable line:
 
-```json
-{
-  "upstreamTag": "Plane-4.5.7",
-  "vehicle": "Plane",
-  "version": "4.5.7",
-  "ardupilotReleaseUtc": "2024-05-28T02:15:33Z",
-  "ardupilotReleaseSource": "github-release"
-}
+```text
+ArduPilot-Release-Date: 2024-05-28
 ```
 
-Backfill older releases (missing the manifest):
+Prefer `published_at` from the matching [ArduPilot/ardupilot](https://github.com/ArduPilot/ardupilot) GitHub Release; otherwise the git commit day of that tag. VectorGCS parses this line from the releases API `body` and caches it in `sitl-firmware-catalog.json`. Do **not** attach `ardupilot-release.json`.
+
+Backfill older releases (missing the date line):
 
 ```powershell
-pwsh -File scripts/backfill_ardupilot_release_manifest.ps1
+pwsh -File scripts/backfill_ardupilot_release_date.ps1
 # optional: -OnlyTag Plane-4.5.7 -WhatIf
 ```
 
